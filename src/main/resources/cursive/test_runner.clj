@@ -21,18 +21,20 @@
     [clojure.test.junit])
   (:import (java.io File)))
 
-(defn- exit-code
+(defn- shutdown
   [summary]
+  (flush)
   (if (clojure.test/successful? summary)
-    0
-    1))
+    (System/exit 0)
+    (System/exit 2)))
 
 (let [plain-report clojure.test/report
-      junit-report clojure.test.junit/junit-report]
+      orig-junit-report clojure.test.junit/junit-report]
   (defn- junit-logging-report-fn [plain-test-out]
     (fn [m]
-      (junit-report m)
-      (binding [clojure.test/*test-out* plain-test-out]
+      (orig-junit-report m)
+      (binding [clojure.test/*test-out* plain-test-out
+                clojure.test/*report-counters* nil]         ;report counters have been incremented by orig-junit-report
         (plain-report m)))))
 
 (defn- run-tests-with-junit-report
@@ -53,8 +55,7 @@
   (apply require ns-syms)
   (->> ns-syms
        (apply runner-fn)
-       (exit-code)
-       (System/exit)))
+       (shutdown)))
 
 (defn run-tests
   ([ns-syms]

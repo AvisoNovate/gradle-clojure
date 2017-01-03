@@ -17,6 +17,7 @@
 package cursive
 
 import groovy.lang.Closure
+import org.gradle.api.GradleException
 import org.gradle.api.Plugin
 import org.gradle.api.Project
 import org.gradle.api.file.FileCollection
@@ -406,6 +407,7 @@ open class ClojureTestRunner @Inject constructor(val fileResolver: FileResolver)
 
   var classpath: FileCollection = SimpleFileCollection()
   var namespaces: Collection<String> = emptyList()
+  var testRunnerScript: File? = null
   var junitReport: File? = null
 
   @TaskAction
@@ -426,16 +428,16 @@ open class ClojureTestRunner @Inject constructor(val fileResolver: FileResolver)
     else
       """(run-tests $namespaceVec)"""
 
-    val script = "$testRunnerScript\n$runnerInvocation"
+    val testRunnerScriptSource = customTestRunnerScriptSource() ?: defaultTestRunnerScriptSource
+
+    val script = "$testRunnerScriptSource\n$runnerInvocation\n"
 
     executeScript(script)
   }
 
   private fun executeScript(script: String) {
-    val file = createTempFile("clojure-compiler", ".clj", temporaryDir)
-    file.bufferedWriter().use { out ->
-      out.write("$script\n")
-    }
+    val file = createTempFile("clojure-test-runner", ".clj", temporaryDir)
+    file.writeText(script)
 
     val classpath = conventionMapping.getConventionValue<FileCollection>(SimpleFileCollection(), "classpath", false)
 
@@ -445,11 +447,20 @@ open class ClojureTestRunner @Inject constructor(val fileResolver: FileResolver)
     exec.classpath = classpath
     exec.setArgs(listOf("-i", file.canonicalPath))
 
-    exec.build().start().waitForFinish().assertNormalExitValue()
+    val testsExistValue = exec.build().start().waitForFinish().exitValue
+
+    when (testsExistValue) {
+      1 -> throw GradleException("Test execution failure")
+      2 -> throw GradleException("There were failing tests")
+    }
+  }
+
+  private fun customTestRunnerScriptSource(): String? {
+    return testRunnerScript?.readText()
   }
 
   companion object {
-    val testRunnerScript =
-            ClojureTestRunner::class.java.getResourceAsStream("/cursive/test_runner.clj").bufferedReader().use { it.readText() }
+    val defaultTestRunnerScriptSource =
+        ClojureTestRunner::class.java.getResourceAsStream("/cursive/test_runner.clj").bufferedReader().use { it.readText() }
   }
 }
