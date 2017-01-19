@@ -41,6 +41,7 @@ import org.gradle.process.internal.ExecException
 import org.gradle.process.internal.JavaExecHandleBuilder
 import org.gradle.util.ConfigureUtil
 import java.io.File
+import java.io.IOException
 import java.io.OutputStream
 import java.util.*
 import java.util.regex.Pattern
@@ -49,6 +50,7 @@ import javax.inject.Inject
 /**
  * @author Colin Fleming
  */
+@Suppress("unused")
 class ClojurePlugin : Plugin<Project> {
   val logger = Logging.getLogger(this.javaClass)
 
@@ -163,6 +165,12 @@ open class ClojureSourceSetImpl(displayName: String?, resolver: FileResolver?) :
 
 class ReflectionWarnings(var enabled: Boolean, var projectOnly: Boolean, var asErrors: Boolean)
 
+object FileCopyErrorHandler : (File, IOException) -> OnErrorAction {
+  override fun invoke(file: File, exception: IOException): OnErrorAction {
+    throw ExecException("Could not copy ${file} to output directory", exception)
+  }
+}
+
 open class ClojureCompile @Inject constructor(val fileResolver: FileResolver) :
     AbstractCompile(),
     JavaForkOptions by DefaultJavaForkOptions(fileResolver) {
@@ -175,13 +183,16 @@ open class ClojureCompile @Inject constructor(val fileResolver: FileResolver) :
   var elideMeta: Collection<String> = emptyList()
   var directLinking: Boolean = false
 
+  @Suppress("unused")
   var namespaces: Collection<String> = emptyList()
 
+  @Suppress("unused")
   fun reflectionWarnings(configureClosure: Closure<Any?>?): ReflectionWarnings {
     ConfigureUtil.configure(configureClosure, reflectionWarnings)
     return reflectionWarnings
   }
 
+  @Suppress("UNUSED_PARAMETER")
   @TaskAction
   fun compile(inputs: IncrementalTaskInputs) {
     compile()
@@ -190,13 +201,20 @@ open class ClojureCompile @Inject constructor(val fileResolver: FileResolver) :
   override fun compile() {
     logger.info("Starting ClojureCompile task")
 
-    destinationDir.deleteRecursively()
+    val tmpDestinationDir = temporaryDir.resolve("classes")
+    removeObsoleteClassFiles(destinationDir, tmpDestinationDir)
+
+    if (!tmpDestinationDir.deleteRecursively()) {
+      throw ExecException("Could not delete ${tmpDestinationDir}")
+    }
+    tmpDestinationDir.mkdirs()
     destinationDir.mkdirs()
 
     if (copySourceToOutput ?: !aotCompile) {
       project.copy {
-        it.from(getSource()).into(destinationDir)
+        it.from(getSource()).into(tmpDestinationDir)
       }
+      copyToDestination(tmpDestinationDir)
       return
     }
 
@@ -213,7 +231,7 @@ open class ClojureCompile @Inject constructor(val fileResolver: FileResolver) :
       logger.info("Compiling " + namespaces.joinToString(", "))
 
       val script = listOf("(try",
-                          "  (binding [*compile-path* \"${destinationDir.canonicalPath}\"",
+                          "  (binding [*compile-path* \"${tmpDestinationDir.canonicalPath}\"",
                           "            *warn-on-reflection* ${reflectionWarnings.enabled}",
                           "            *compiler-options* {:disable-locals-clearing $disableLocalsClearing",
                           "                                :elide-meta [${elideMeta.map { ":$it" }.joinToString(" ")}]",
@@ -261,11 +279,29 @@ open class ClojureCompile @Inject constructor(val fileResolver: FileResolver) :
 
       executeScript(script, stdout, stderr)
 
+      copyToDestination(tmpDestinationDir)
+
       if (libraryReflectionWarningCount > 0) {
         System.err.println("$libraryReflectionWarningCount reflection warnings from dependencies")
       }
       if (reflectionWarnings.asErrors && reflectionWarningCount > 0) {
         throw ExecException("$reflectionWarningCount reflection warnings found")
+      }
+    }
+  }
+
+  private fun copyToDestination(tmpDestinationDir: File) {
+    tmpDestinationDir.copyRecursively(target = destinationDir, overwrite = true, onError = FileCopyErrorHandler)
+  }
+
+  private fun  removeObsoleteClassFiles(destinationDir: File, tmpDestinationDir: File) {
+    tmpDestinationDir.walkBottomUp().forEach {
+      val relativeFile = it.relativeTo(tmpDestinationDir)
+      val fileInDestination = destinationDir.resolve(relativeFile)
+      if (fileInDestination.delete()) {
+        logger.debug("Deleted obsolete output file {}", fileInDestination)
+      } else {
+        logger.warn("Couldn't delete obsolete output file {}", fileInDestination)
       }
     }
   }
@@ -282,7 +318,7 @@ open class ClojureCompile @Inject constructor(val fileResolver: FileResolver) :
 
     // clojure.core/compile requires following on its classpath:
     // - libs (this.classpath)
-    // - compiled namespaces sources (getSourceRootsFiles)
+    // - namespaces sources to be compiled (getSourceRootsFiles)
     // - *compile-path* directory (this.destinationDir)
     exec.classpath = classpath + SimpleFileCollection(getSourceRootsFiles()) + SimpleFileCollection(destinationDir)
 
@@ -322,16 +358,15 @@ open class ClojureCompile @Inject constructor(val fileResolver: FileResolver) :
   }
 
   private fun getSourceRoots(): HashSet<String> {
-    val roots = source
-        .filter { it is SourceDirectorySet }
-        .flatMap { (it as SourceDirectorySet).srcDirs }
+    return getSourceRootsFiles()
         .map { it.canonicalPath }
         .toHashSet()
-    return roots
   }
 
   private fun getSourceRootsFiles(): List<File> {
-    return getSourceRoots().map(::File)
+    return source
+        .filter { it is SourceDirectorySet }
+        .flatMap { (it as SourceDirectorySet).srcDirs }
   }
 
   companion object {
@@ -368,6 +403,7 @@ open class ClojureCompile @Inject constructor(val fileResolver: FileResolver) :
 
     val REFLECTION_WARNING_PREFIX = "Reflection warning, "
 
+    @Suppress("unused")
     fun munge(name: String): String {
       val sb = StringBuilder()
       for (c in name) {
@@ -405,7 +441,9 @@ open class ClojureTestRunner @Inject constructor(val fileResolver: FileResolver)
     ConventionTask(),
     JavaForkOptions by DefaultJavaForkOptions(fileResolver) {
 
+  @Suppress("unused")
   var classpath: FileCollection = SimpleFileCollection()
+  @Suppress("unused")
   var namespaces: Collection<String> = emptyList()
   var testRunnerScript: File? = null
   var junitReport: File? = null
